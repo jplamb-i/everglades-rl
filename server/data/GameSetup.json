@@ -1,0 +1,15 @@
+{  
+   "__type":"Setup",
+  "MapFile": "DemoMap.json",
+  "UnitFile": "UnitDefinitions.json",
+  "PlayerFile": "PlayerConfig.json",
+  "UnitBudget": 100,
+  "TurnLimit": 150,
+  "CaptureBonus": 1000,
+  "FocusTurnMin": 4,
+  "FocusTurnMax": 6,
+  "FocusHeatMovement": 15,
+  "FocusHeatCombat": 25,
+  "FocusHeatCooloff": 10,
+  "RL_Render": 0
+}

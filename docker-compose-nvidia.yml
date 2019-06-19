@@ -1,0 +1,7 @@
+services:
+  server:
+    image: "everglades-server"
+  env:
+    image: "everglades-env"
+  agent:
+    image: "everglades-agent-nvidia"

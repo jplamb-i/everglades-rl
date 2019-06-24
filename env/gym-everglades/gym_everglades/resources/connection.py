@@ -123,3 +123,6 @@ class Connection:
             ))
         except Exception as e:
             raise e
+
+    def receive_and_parse(self):
+        return [self.parse_message(msg) for msg in self.receive_all()]

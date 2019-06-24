@@ -22,7 +22,7 @@ class Connection:
         self.__sub_addr = sub_addr
         self.__await_connection_time = await_connection_time
         self.tag = tag
-        self.__session_token = None
+        self.session_token = None
 
         self.__pub_context = zmq.Context()
         self.__pub_socket = self.__pub_context.socket(zmq.PUB)
@@ -72,8 +72,8 @@ class Connection:
             msg_objs = [self.parse_message(x) for x in msgs]
             for msg_obj in msg_objs:
                 if isinstance(msg_obj, evgtypes.NewClientACK) and msg_obj.guid == guid:
-                    self.__session_token = msg_obj.ses_tok
-                    logger.debug(f'Connected to server ({self.__session_token}')
+                    self.session_token = msg_obj.ses_tok
+                    logger.debug(f'Connected to server ({self.session_token}')
                     return
             sleep(0.25)
             logger.debug(f'Waiting for server connection. Attempt {counter}')
@@ -82,7 +82,7 @@ class Connection:
         raise Exception(f'Unable to connect to server after {counter} seconds. Exiting...')
 
     def close(self):
-        self.__session_token = None
+        self.session_token = None
         self.__pub_socket.close()
         self.__pub_context.destroy()
         self.__pub_context.term()

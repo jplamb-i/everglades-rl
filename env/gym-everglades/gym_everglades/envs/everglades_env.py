@@ -1,4 +1,4 @@
-from gym_everglades.resources import evgtypes
+from gym_everglades.resources import evgtypes, evgcommands
 import gym
 from gym_everglades.resources.connection import Connection
 from gym.spaces import Box
@@ -12,9 +12,12 @@ class Everglades(gym.Env):
     def __init__(self, player_num, game_config):
         self.parse_game_config(game_config)
 
+        self.node_defs = {}
+
         self.player_num = player_num
         self.opposing_player_num = 1 if self.player_num == 2 else 2
 
+        self.max_game_time = 300  # todo is this correct?
         self.num_units = 100
         self.num_nodes = 11
         self.unit_classes = {
@@ -26,6 +29,7 @@ class Everglades(gym.Env):
         self.group_definitions = {}
         self.opp_group_definitions = {}
 
+        self.unit_to_group = {}
         self.unit_definitions = np.zeros(5, self.num_units)
         self.opp_unit_definitions = np.zeros(5, self.num_units)
 
@@ -35,6 +39,7 @@ class Everglades(gym.Env):
         self.game_time = 0
         self.game_scores = np.zeros(2)
         self.game_conclusion = 0
+        self.winning_player = 0
 
         self.server_address = None
         self.sub_socket = None
@@ -90,29 +95,92 @@ class Everglades(gym.Env):
         opp_unit_state_low = np.tile(unit_portion_low, self.num_units)
         opp_unit_state_high = np.tile(unit_portion_high, self.num_units)
 
-        control_point_portion_low = np.array(np.array([
-            0, 0, 0, 0, 0, 0, 0, 0, 0,  # is fortress
-            0, 0, 0, 0, 0, 0, 0, 0, 0,  # is watchtower
-            -100, -100, -100, -100, -100, -100, -100, -100, -100,  # pct controlled by
-        ]))
-        control_point_portion_high = np.array(np.array([
-            1, 1, 1, 1, 1, 1, 1, 1, 1,  # is fortress
-            1, 1, 1, 1, 1, 1, 1, 1, 1,  # is watchtower
-            100, 100, 100, 100, 100, 100, 100, 100, 100,  # pct controlled by
-        ]))
+        control_point_portion_low = np.concatenate([
+            np.zeros(self.num_nodes),  # is fortress
+            np.zeros(self.num_nodes),  # is watchtower
+            np.repeat(-100, self.num_nodes)  # pct controlled by
+        ])
+
+        control_point_portion_high = np.concatenate([
+            np.ones(self.num_nodes),  # is fortress
+            np.ones(self.num_nodes),  # is watchtower
+            np.repeat(100, self.num_nodes)  # pct controlled by
+        ])
+
         control_point_state_low = np.tile(control_point_portion_low, self.num_nodes)
         control_point_state_high = np.tile(control_point_portion_high, self.num_nodes)
 
         self.observation_space = Box(
-            low=np.concatenate([control_point_state_low, unit_state_low, opp_unit_state_low]),
-            high=np.concatenate([control_point_state_high, unit_state_high, opp_unit_state_high])
+            low=np.concatenate([[0], control_point_state_low, unit_state_low, opp_unit_state_low]),
+            high=np.concatenate([[self.max_game_time], control_point_state_high, unit_state_high, opp_unit_state_high])
         )
 
     def step(self, action):
-        pass
+        # todo validate action
+        [self.act(unit_action) for unit_action in action]
+
+        waiting_for_action = False
+        _counter = 0
+        while not waiting_for_action:
+            waiting_for_action, is_game_started, is_game_over = self.update_state()
+            _counter += 1
+            if _counter > 30:
+                raise TimeoutError('Game not prompted for action')
+
+        state = self.build_state()
+
+        info = {
+            'friendly_units_rem': len(np.where(self.unit_definitions[:, 2] > 0)),
+            'opp_units_rem': len(np.where(self.opp_unit_definitions[:, 2] > 0)),
+        }
+
+        if is_game_over:
+            info['game_ending_condition'] = self.game_conclusion
+
+        reward = 1 if self.winning_player == self.player_num else 0
+
+        return state, reward, is_game_over, info
+
+    def act(self, action):
+        unit_id, node_id = action
+        group_id = self.unit_to_group[unit_id]
+        self.conn.send(evgcommands.PY_GROUP_MoveToNode(self.conn.session_token, group_id, node_id))
 
     def reset(self):
-        pass
+        self.group_definitions = {}
+        self.opp_group_definitions = {}
+
+        self.unit_to_group = {}
+
+        self.unit_definitions = np.zeros(5, self.num_units)
+        self.opp_unit_definitions = np.zeros(5, self.num_units)
+
+        self.control_states = []
+        self.global_control_states = []
+
+        self.game_time = 0
+        self.game_scores = np.zeros(2)
+        self.game_conclusion = 0
+        self.winning_player = 0
+
+        for class_type, count in self.unit_configs:
+            for i in range(count):
+                self.conn.send(
+                    evgcommands.PY_GROUP_InitGroup(self.conn.session_token, class_type, 1, f'{class_type}-{i}')
+                )
+
+        game_started = False
+        _counter = 0
+        while not game_started:
+
+            waiting_for_action, is_game_started, is_game_over = self.update_state()
+            _counter += 1
+            if _counter > 5:
+                logger.warning(f'Unable to start game after {_counter} attempts')
+            if _counter > 10:
+                raise TimeoutError('Failed to start a new game')
+
+        return self.build_state()
 
     def render(self, mode='human'):
         pass
@@ -150,7 +218,30 @@ class Everglades(gym.Env):
 
         return waiting_for_action, is_game_started, is_game_over
 
+    def build_state(self):
+        state = np.array([self.max_game_time - self.game_time])
+        # control points
+        # is fortress, is watchtower, percent controlled
+        for i in range(self.num_nodes):
+            node_num = i + 1
+            node_def = self.node_defs[node_num]
+            is_fortress = node_def['is_fortress']
+            is_watchtower = node_def['is_watchtower']
+            control_pct = self.control_states[i]
+
+            node_state = np.array([is_fortress, is_watchtower, control_pct])
+            state = np.concatenate([state, node_state])
+
+        # unit state
+        # node loc, class, health, in transit, in combat
+        # opp state
+        # node loc, class, in_transit
+        state = np.concatenate([state, self.unit_definitions, self.opp_unit_definitions])
+
+        return state
+
     def initialize_groups(self, msg):
+        is_for_player = msg.player == self.player_num
         group_defs, unit_defs = self.get_definitions(msg.player)
 
         if msg.group not in self.group_definitions:
@@ -163,6 +254,9 @@ class Everglades(gym.Env):
                 # node loc, class, health, in transit, in combat
                 unit_defs[id] = state
                 group_defs[msg.group].append(id)
+                if is_for_player:
+                    self.unit_to_group[id] = msg.group
+
 
     def update_group_locs(self, msg):
         group_defs, unit_defs = self.get_definitions(msg.player)
@@ -204,6 +298,7 @@ class Everglades(gym.Env):
         self.game_scores = np.array([msg.player1, msg.player2])
         # 1: time expired, 2: base captured, 3: units eliminated
         self.game_conclusion = msg.status
+        self.winning_player = np.argmax(self.game_scores) + 1
 
     def update_node_knowledge(self, msg):
         is_players = msg.player == self.player_num
@@ -215,7 +310,6 @@ class Everglades(gym.Env):
     def update_opp_group_knowledge(self, msg):
         _, unit_defs = self.get_definitions(msg.player)
         logger.warning('Handling of this message not implemented')
-
 
     def get_definitions(self, team_num):
         if team_num == self.player_num:

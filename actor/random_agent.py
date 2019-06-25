@@ -4,7 +4,6 @@ import time
 import gym
 import gym_everglades
 
-
 class RandomAgent:
     def __init__(self, actions):
         self.actions = actions
@@ -14,7 +13,20 @@ class RandomAgent:
 
 
 def main():
-    env = gym.make('everglades-v0')
+    env_args = {
+        'player_num': np.random.choice([1, 2]),
+        'game_config': {
+            'server_address': '',
+            'pub_socket': '5555',
+            'sub_socket': '5563',
+            'unit_config': {
+                1: 33,
+                2: 33,
+                3: 34
+            }
+        }
+    }
+    env = gym.make('everglades-v0', **env_args)
     obs = env.reset()
 
     agent = RandomAgent(env.action_space)

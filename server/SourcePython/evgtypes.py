@@ -155,16 +155,17 @@ class PY_GROUP_TransferUnits:
 
 #--------------------------------------------------------------------
 class PY_NODE_ControlUpdate:
-    def __init__(self, node_, faction_, controlvalue_, controlled_):
+    def __init__(self, player_, node_, faction_, controlvalue_, controlled_):
         self.time = 0
+        self.player = player_ # the id for the player recieving this message
         self.node = node_ # the id for the node
-        self.faction = faction_ # the id for the player's faction
-        self.controlvalue = controlvalue_ # current control points at the node
+        self.faction = faction_ # the id of the player controlling the node
+        self.controlvalue = controlvalue_ # current control value at the node
         self.controlled = controlled_ # is the node completely controlled
 
     @classmethod
     def from_message(cls, j):
-        return cls(j['node'], j['faction'], j['controlvalue'], j['controlled'])
+        return cls(j['player'], j['node'], j['faction'], j['controlvalue'], j['controlled'])
 
     @staticmethod
     def TypeId():
@@ -242,6 +243,12 @@ class GoodBye:
     @staticmethod
     def TypeId():
         return 256715045
+
+#--------------------------------------------------------------------
+class GameOver:
+    @staticmethod
+    def TypeId():
+        return 1526429046
 
 #--------------------------------------------------------------------
 class NewClientACK:

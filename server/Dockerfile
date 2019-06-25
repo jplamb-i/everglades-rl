@@ -11,4 +11,4 @@ COPY everglades .
 
 EXPOSE 5555 5556
 
-CMD ./everglades ./data/GameSetup.json $PWD/SourcePython/
+CMD ./everglades  /data/GameSetup.json

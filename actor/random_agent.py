@@ -16,7 +16,8 @@ def main():
     env_args = {
         'player_num': np.random.choice([1, 2]),
         'game_config': {
-            'server_address': '',
+            'await_connection_time': 0,
+            'server_address': '0.0.0.0',
             'pub_socket': '5555',
             'sub_socket': '5563',
             'unit_config': {

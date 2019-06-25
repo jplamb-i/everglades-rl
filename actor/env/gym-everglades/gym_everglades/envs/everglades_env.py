@@ -19,6 +19,7 @@ class Everglades(gym.Env):
         self.sub_socket = None
         self.pub_socket = None
         self.unit_configs = None
+        self.await_connection_time = None
 
         self.parse_game_config(game_config)
 
@@ -97,6 +98,7 @@ class Everglades(gym.Env):
         self.pub_socket = config.get('pub_socket', '5555')
         self.sub_socket = config.get('sub_socket', '5563')
         self.unit_configs = config.get('unit_config')
+        self.await_connection_time = config.get('await_connection_time', 60)
 
     def build_obs_space(self):
         # control points state
@@ -354,5 +356,5 @@ class Everglades(gym.Env):
         sub_addr = f'tcp://{self.server_address}:{self.sub_socket}'
         logger.info(f'Connecting to server at:\n\tPub Addr {pub_addr}\n\tSub Addr {sub_addr}')
         print(f'Connecting to server at:\n\tPub Addr {pub_addr}\n\tSub Addr {sub_addr}')
-        return Connection(pub_addr, sub_addr, self.player_num)
+        return Connection(pub_addr, sub_addr, self.player_num, await_connection_time=self.await_connection_time)
 

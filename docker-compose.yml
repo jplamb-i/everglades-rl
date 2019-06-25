@@ -3,7 +3,5 @@ version: '3.7'
 services:
   server:
     image: "everglades-server:latest"
-  env:
-    image: "everglades-env:latest"
   agent:
     image: "${agent_image}:latest"

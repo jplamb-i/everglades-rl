@@ -6,10 +6,10 @@ services:
   agent:
     image: "${agent_image}:latest"
     environment:
-      - PLAYER_NUM=1
+      - PLAYER_NUM=0
       - PUB_SOCKET=5555
   opp-agent:
     image: "everglades-agent:latest"
     environment:
-      - PLAYER_NUM=2
+      - PLAYER_NUM=1
       - PUB_SOCKET=5556

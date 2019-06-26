@@ -5,6 +5,7 @@ from gym.spaces import Box
 from logging import getLogger
 import numpy as np
 from time import sleep
+import json
 
 logger = getLogger()
 
@@ -35,11 +36,8 @@ class Everglades(gym.Env):
         self.max_game_time = 300  # todo is this correct?
         self.num_units = 100
         self.num_nodes = 11
-        self.unit_classes = {
-            1: 'light',
-            2: 'medium',
-            3: 'heavy'
-        }
+        self.unit_classes = ['controller', 'striker', 'tank']
+
         if self.unit_configs is None:
             self.unit_configs = {
                 1: self.num_units // len(self.unit_classes),
@@ -52,8 +50,8 @@ class Everglades(gym.Env):
         self.opp_group_definitions = {}
 
         self.unit_to_group = {}
-        self.unit_definitions = np.zeros((5, self.num_units))
-        self.opp_unit_definitions = np.zeros((5, self.num_units))
+        self.unit_definitions = np.zeros((self.num_units, 5))
+        self.opp_unit_definitions = np.zeros((self.num_units, 3))
 
         self.control_states = []
         self.global_control_states = []
@@ -115,12 +113,12 @@ class Everglades(gym.Env):
         # [node loc, health, group?, in transit? in combat?]
         # what should node loc be during transit? fraction of node left or node arriving at?
         unit_portion_low = np.array([1, 1, 0, 0, 0])  # node loc, class, health, in transit, in combat
-        unit_portion_high = np.array([self.num_nodes, len(self.unit_classes.keys()), 100, 1, 1])
+        unit_portion_high = np.array([self.num_nodes, len(self.unit_classes), 100, 1, 1])
         unit_state_low = np.tile(unit_portion_low, self.num_units)
         unit_state_high = np.tile(unit_portion_high, self.num_units)
 
         unit_portion_low = np.array([-1, -1, 0])  # node loc, class, in_transit
-        unit_portion_high = np.array([self.num_nodes, len(self.unit_classes.keys()), 1])
+        unit_portion_high = np.array([self.num_nodes, len(self.unit_classes), 1])
         opp_unit_state_low = np.tile(unit_portion_low, self.num_units)
         opp_unit_state_high = np.tile(unit_portion_high, self.num_units)
 
@@ -187,8 +185,8 @@ class Everglades(gym.Env):
 
         self.unit_to_group = {}
 
-        self.unit_definitions = np.zeros((5, self.num_units))
-        self.opp_unit_definitions = np.zeros((5, self.num_units))
+        self.unit_definitions = np.zeros((self.num_units, 5))
+        self.opp_unit_definitions = np.zeros((self.num_units, 3))
 
         self.control_states = []
         self.global_control_states = []
@@ -234,6 +232,8 @@ class Everglades(gym.Env):
 
         msgs_by_type = {}
         for msg in msgs:
+            if hasattr(msg, 'player') and msg.player != self.player_num:
+                continue
             msg_type = msg.__class__.__name__
             if msg_type not in msgs_by_type:
                 msgs_by_type[msg_type] = []
@@ -280,23 +280,28 @@ class Everglades(gym.Env):
         return state
 
     def initialize_groups(self, msg):
+        logger.info(f'~~~Initializing groups:\n{json.dumps(msg.__dict__)}')
         is_for_player = msg.player == self.player_num
         group_defs, unit_defs = self.get_definitions(msg.player)
 
-        if msg.group not in self.group_definitions:
-            group_defs[msg.group] = []
+        group_num = msg.group - 1
 
-        for start_id, type, count in zip(msg.start, msg.types, msg.count):
-            state = np.array([msg.node, type, 100, 0, 0])
+        if group_num not in self.group_definitions:
+            group_defs[group_num] = []
+
+        for start_id, group_type, count in zip(msg.start, msg.types, msg.count):
+            group_type_num = self.unit_classes.index(group_type.lower())
+            state = np.array([int(msg.node), group_type_num, 100, 0, 0])
             for i in range(count):
                 id = count + i
                 # node loc, class, health, in transit, in combat
                 unit_defs[id] = state
-                group_defs[msg.group].append(id)
+                group_defs[group_num].append(id)
                 if is_for_player:
-                    self.unit_to_group[id] = msg.group
+                    self.unit_to_group[id] = group_num
 
     def update_group_locs(self, msg):
+        logger.info(f'~~~Updating group locations:\n{json.dumps(msg.__dict__)}')
         group_defs, unit_defs = self.get_definitions(msg.player)
 
         in_transit = msg.status == 'IN_TRANSIT'
@@ -314,6 +319,7 @@ class Everglades(gym.Env):
             unit_defs[id] = state
 
     def update_group_combat(self, msg):
+        logger.info(f'~~~Group combat update:\n{json.dumps(msg.__dict__)}')
         _, unit_defs = self.get_definitions(msg.player)
 
         for id, health in zip(msg.units, msg.health):
@@ -326,6 +332,7 @@ class Everglades(gym.Env):
         logger.warning('Transferring units not supported')
 
     def update_control_state(self, msg):
+        logger.info(f'~~~Control state update:\n{json.dumps(msg.__dict__)}')
         value = msg.controlvalue if msg.faction == self.player_num else -msg.controlvalue
         value = int(value * 100)
         if msg.player == self.player_num:
@@ -333,12 +340,14 @@ class Everglades(gym.Env):
         self.global_control_states[msg.node - 1] = value
 
     def update_game_score(self, msg):
+        logger.info(f'~~~Game score update:\n{json.dumps(msg.__dict__)}')
         self.game_scores = np.array([msg.player1, msg.player2])
         # 1: time expired, 2: base captured, 3: units eliminated
         self.game_conclusion = msg.status
         self.winning_player = np.argmax(self.game_scores) + 1
 
     def update_node_knowledge(self, msg):
+        logger.info(f'~~~Node knowledge update:\n{json.dumps(msg.__dict__)}')
         is_players = msg.player == self.player_num
         for node, knowledge, controller, percent in zip(msg.nodes, msg.knowledge, msg.controller, msg.percent):
             self.global_control_states[node - 1] = percent
@@ -346,6 +355,7 @@ class Everglades(gym.Env):
                 self.control_states[node - 1] = percent
 
     def update_opp_group_knowledge(self, msg):
+        logger.info(f'~~~Opponent knowledge update:\n{json.dumps(msg.__dict__)}')
         _, unit_defs = self.get_definitions(msg.player)
         logger.warning('Handling of this message not implemented')
 

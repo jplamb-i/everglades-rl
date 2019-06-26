@@ -9,6 +9,6 @@ COPY data ./data/
 COPY SourcePython ./SourcePython/
 COPY everglades .
 
-EXPOSE 5555 5556
+EXPOSE 5563 5555 5556
 
-CMD ./everglades  /data/GameSetup.json
+CMD ["./everglades",  "/data/GameSetup.json"]

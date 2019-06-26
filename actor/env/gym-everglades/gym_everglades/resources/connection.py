@@ -33,8 +33,6 @@ class Connection:
         self.__sub_socket.connect(self.__sub_addr)
         self.__sub_socket.setsockopt(zmq.SUBSCRIBE, b"")
 
-        self.connect()
-
         # Handles special case command types without a from message function
         def make(cls):
             def _make(*args, **kwargs):
@@ -45,10 +43,12 @@ class Connection:
         # Store function for creating each message class by message type
         self.__parsers = {}
         for name, cls in getmembers(evgtypes):
-            type_id = getattr(cls, "TypeId")
+            type_id = getattr(cls, "TypeId", None)
             from_message = getattr(cls, "from_message", make(cls))
             if callable(type_id):
                 self.__parsers[type_id()] = from_message
+
+        self.connect()
 
     def __repr__(self):
         return self.__str__()
@@ -71,12 +71,14 @@ class Connection:
             msgs = self.receive_all()
             msg_objs = [self.parse_message(x) for x in msgs]
             for msg_obj in msg_objs:
-                if isinstance(msg_obj, evgtypes.NewClientACK) and msg_obj.guid == guid:
+                if isinstance(msg_obj, evgtypes.NewClientACK) and msg_obj.guid == str(guid):
                     self.session_token = msg_obj.ses_tok
-                    logger.debug(f'Connected to server ({self.session_token}')
+                    self.guid = str(guid)
+                    logger.info(f'Connected to server ({self.session_token}')
                     return
-            sleep(0.25)
-            logger.debug(f'Waiting for server connection. Attempt {counter}')
+
+            sleep(1)
+            logger.info(f'Waiting for server connection ({guid}). Attempt {counter}')
             self.send(evgcommands.HelloWorld(guid, self.tag))
 
         raise Exception(f'Unable to connect to server after {counter} seconds. Exiting...')
@@ -95,7 +97,7 @@ class Connection:
         while self.__sub_socket.poll(100) == zmq.POLLIN:
             msgs.append(self.receive())
 
-        return msgs
+        return [item for sublist in msgs for item in sublist]
 
     def receive(self):
         try:

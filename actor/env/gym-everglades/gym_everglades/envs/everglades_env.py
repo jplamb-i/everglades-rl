@@ -4,17 +4,21 @@ from gym_everglades.resources.connection import Connection
 from gym.spaces import Box
 from logging import getLogger
 import numpy as np
+from time import sleep
 
 logger = getLogger()
 
 
 class Everglades(gym.Env):
-    def __init__(self, player_num, game_config):
+    def __init__(self, env_config):
         """
 
         :param player_num:
         :param game_config: a dict containing config values
         """
+        game_config = env_config['game_config']
+        player_num = env_config['player_num']
+
         self.server_address = None
         self.sub_socket = None
         self.pub_socket = None
@@ -62,16 +66,16 @@ class Everglades(gym.Env):
         self.observation_space = None
 
         self.message_parsing_funcs = {
-            evgtypes.PY_GROUP_MoveUpdate: self.update_group_locs,
-            evgtypes.PY_GROUP_Initialization: self.initialize_groups,
-            evgtypes.PY_GROUP_CombatUpdate: self.update_group_combat,
-            evgtypes.PY_GROUP_CreateNew: self.create_new_group,
-            evgtypes.PY_GROUP_TransferUnits: self.transfer_units,
-            evgtypes.PY_NODE_ControlUpdate: self.update_control_state,
-            evgtypes.PY_GAME_Scores: self.update_game_score,
-            evgtypes.PY_NODE_Knowledge: self.update_node_knowledge,
-            evgtypes.PY_GROUP_Knowledge: self.update_opp_group_knowledge,
-            evgtypes.PubError: lambda msg: logger.warning('Bad message {}'.format(msg)),
+            evgtypes.PY_GROUP_MoveUpdate.__name__: self.update_group_locs,
+            evgtypes.PY_GROUP_Initialization.__name__: self.initialize_groups,
+            evgtypes.PY_GROUP_CombatUpdate.__name__: self.update_group_combat,
+            evgtypes.PY_GROUP_CreateNew.__name__: self.create_new_group,
+            evgtypes.PY_GROUP_TransferUnits.__name__: self.transfer_units,
+            evgtypes.PY_NODE_ControlUpdate.__name__: self.update_control_state,
+            evgtypes.PY_GAME_Scores.__name__: self.update_game_score,
+            evgtypes.PY_NODE_Knowledge.__name__: self.update_node_knowledge,
+            evgtypes.PY_GROUP_Knowledge.__name__: self.update_opp_group_knowledge,
+            evgtypes.PubError.__name__: lambda msg: logger.warning('Bad message {}'.format(msg)),
         }
 
         self.build_obs_space()
@@ -81,7 +85,11 @@ class Everglades(gym.Env):
             high=np.repeat(self.num_nodes, self.num_units)
         )
 
-        self.conn = self.start_connection()
+        pub_addr = f'tcp://*:{self.pub_socket}'
+        sub_addr = f'tcp://{self.server_address}:{self.sub_socket}'
+        logger.info(f'Connecting to server at:\n\tPub Addr {pub_addr}\n\tSub Addr {sub_addr}')
+
+        self.conn = Connection(pub_addr, sub_addr, self.player_num, await_connection_time=self.await_connection_time)
 
     def parse_game_config(self, config):
         """
@@ -140,6 +148,8 @@ class Everglades(gym.Env):
         # todo validate action
         [self.act(unit_action) for unit_action in action]
 
+        self.conn.send(evgcommands.EndTurn(self.conn.guid))
+
         waiting_for_action = False
         _counter = 0
         while not waiting_for_action:
@@ -165,7 +175,7 @@ class Everglades(gym.Env):
     def act(self, action):
         unit_id, node_id = action
         group_id = self.unit_to_group[unit_id]
-        self.conn.send(evgcommands.PY_GROUP_MoveToNode(self.conn.session_token, group_id, node_id))
+        self.conn.send(evgcommands.PY_GROUP_MoveToNode(self.conn.guid, group_id, node_id))
 
     def seed(self, seed=None):
         if seed is not None and type(seed) == dict:
@@ -177,8 +187,8 @@ class Everglades(gym.Env):
 
         self.unit_to_group = {}
 
-        self.unit_definitions = np.zeros(5, self.num_units)
-        self.opp_unit_definitions = np.zeros(5, self.num_units)
+        self.unit_definitions = np.zeros((5, self.num_units))
+        self.opp_unit_definitions = np.zeros((5, self.num_units))
 
         self.control_states = []
         self.global_control_states = []
@@ -188,13 +198,13 @@ class Everglades(gym.Env):
         self.game_conclusion = 0
         self.winning_player = 0
 
-        for class_type, count in self.unit_configs:
+        for class_type, count in self.unit_configs.items():
             for i in range(count):
                 self.conn.send(
-                    evgcommands.PY_GROUP_InitGroup(self.conn.session_token, class_type, 1, f'{class_type}-{i}')
+                    evgcommands.PY_GROUP_InitGroup(self.conn.guid, class_type, 1, f'{class_type}-{i}')
                 )
 
-        self.conn.send(evgcommands.Go(self.conn.session_token))
+        self.conn.send(evgcommands.Go(self.conn.guid))
 
         is_game_started = False
         _counter = 0
@@ -205,6 +215,7 @@ class Everglades(gym.Env):
                 logger.warning(f'Unable to start game after {_counter} attempts')
             if _counter > 10:
                 raise TimeoutError('Failed to start a new game')
+            sleep(1)
 
         return self.build_state()
 
@@ -228,16 +239,18 @@ class Everglades(gym.Env):
                 msgs_by_type[msg_type] = []
             msgs_by_type[msg_type].append(msg)
 
+        logger.info('Message received types {}'.format(msgs_by_type.keys()))
+
         for type in msgs_by_type:
             if type in self.message_parsing_funcs:
                 [self.message_parsing_funcs[type](msg) for msg in msgs_by_type[type]]
-            elif type == evgtypes.TurnStart:
+            elif type == str(evgtypes.TurnStart.__name__):
                 waiting_for_action = True
-            elif type == evgtypes.GoodBye:
+            elif type == str(evgtypes.GoodBye.__name__):
                 is_game_over = True
-            elif type == evgtypes.NewClientACK:
+            elif type == str(evgtypes.NewClientACK.__name__):
                 is_game_started = True
-            elif type == evgtypes.TimeStamp:
+            elif type == str(evgtypes.TimeStamp.__name__):
                 self.game_time = max([msg.time for msg in msgs_by_type[type]])
             else:
                 logger.warning(f'Unrecognized message type {type}')
@@ -282,7 +295,6 @@ class Everglades(gym.Env):
                 group_defs[msg.group].append(id)
                 if is_for_player:
                     self.unit_to_group[id] = msg.group
-
 
     def update_group_locs(self, msg):
         group_defs, unit_defs = self.get_definitions(msg.player)
@@ -346,15 +358,3 @@ class Everglades(gym.Env):
             unit_definitions = self.opp_unit_definitions
 
         return group_definitions, unit_definitions
-
-    def start_connection(self):
-        """
-        Establish connection with game server
-        :return:
-        """
-        pub_addr = f'tcp://*:{self.pub_socket}'
-        sub_addr = f'tcp://{self.server_address}:{self.sub_socket}'
-        logger.info(f'Connecting to server at:\n\tPub Addr {pub_addr}\n\tSub Addr {sub_addr}')
-        print(f'Connecting to server at:\n\tPub Addr {pub_addr}\n\tSub Addr {sub_addr}')
-        return Connection(pub_addr, sub_addr, self.player_num, await_connection_time=self.await_connection_time)
-

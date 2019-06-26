@@ -1,3 +1,6 @@
 # Created by .ignore support plugin (hsz.mobi)
 .idea/
 *_old
+
+__pycache__/
+actor/env/gym-everglades/gym_everglades.egg-info/

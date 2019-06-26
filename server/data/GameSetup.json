@@ -17,5 +17,9 @@
 	"RL_ORTHO_Y": 7,
 	"RL_Render_P1": 1,
 	"RL_Render_P2": 0,
-	"RL_Render_SaveToDisk": 0
+	"RL_Render_SaveToDisk": 0,
+	"SubSocketAddr0": "agent",
+	"SubSocketPort0": 5555,
+	"SubSocketAddr1": "opp-agent",
+	"SubSocketPort1": 5556
 }

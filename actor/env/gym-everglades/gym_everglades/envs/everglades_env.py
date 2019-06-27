@@ -28,10 +28,67 @@ class Everglades(gym.Env):
 
         self.parse_game_config(game_config)
 
-        self.node_defs = {}
+        # todo: this needs to be built via info over the server
+        self.node_defs = {
+            1: {
+                'defense': 1,
+                'is_watchtower': False,
+                'is_fortress': False
+            },
+            2: {
+                'defense': 1.25,
+                'is_watchtower': True,
+                'is_fortress': False
+            },
+            3: {
+                'defense': 1.5,
+                'is_watchtower': False,
+                'is_fortress': False
+            },
+            4: {
+                'defense': 1.5,
+                'is_watchtower': False,
+                'is_fortress': True
+            },
+            5: {
+                'defense': 1.5,
+                'is_watchtower': False,
+                'is_fortress': False
+            },
+            6: {
+                'defense': 1.5,
+                'is_watchtower': False,
+                'is_fortress': False
+            },
+            7: {
+                'defense': 1.5,
+                'is_watchtower': False,
+                'is_fortress': False
+            },
+            8: {
+                'defense': 1.5,
+                'is_watchtower': False,
+                'is_fortress': True
+            },
+            9: {
+                'defense': 1.5,
+                'is_watchtower': False,
+                'is_fortress': False
+            },
+            10: {
+                'defense': 1.25,
+                'is_watchtower': True,
+                'is_fortress': False
+            },
+            11: {
+                'defense': 1,
+                'is_watchtower': False,
+                'is_fortress': False
+            }
+        }
 
         self.player_num = player_num
-        self.opposing_player_num = 1 if self.player_num == 2 else 2
+        self.opposing_player_num = 1 if self.player_num == 0 else 1
 
         self.max_game_time = 300  # todo is this correct?
         self.num_units = 100
@@ -53,8 +110,8 @@ class Everglades(gym.Env):
         self.unit_definitions = np.zeros((self.num_units, 5))
         self.opp_unit_definitions = np.zeros((self.num_units, 3))
 
-        self.control_states = []
-        self.global_control_states = []
+        self.control_states = [-1] * self.num_nodes
+        self.global_control_states = [-1] * self.num_nodes
 
         self.game_time = 0
         self.game_scores = np.zeros(2)
@@ -144,7 +201,7 @@ class Everglades(gym.Env):
 
     def step(self, action):
         # todo validate action
-        [self.act(unit_action) for unit_action in action]
+        [self.act(unit_id, node_id) for unit_id, node_id in enumerate(action)]
 
         self.conn.send(evgcommands.EndTurn(self.conn.guid))
 
@@ -170,8 +227,8 @@ class Everglades(gym.Env):
 
         return state, reward, is_game_over, info
 
-    def act(self, action):
-        unit_id, node_id = action
+    def act(self, unit_id, node_id):
+        # logger.info('Acting foor unit {} to node {}'.format(unit_id, node_id))
         group_id = self.unit_to_group[unit_id]
         self.conn.send(evgcommands.PY_GROUP_MoveToNode(self.conn.guid, group_id, node_id))
 
@@ -188,8 +245,8 @@ class Everglades(gym.Env):
         self.unit_definitions = np.zeros((self.num_units, 5))
         self.opp_unit_definitions = np.zeros((self.num_units, 3))
 
-        self.control_states = []
-        self.global_control_states = []
+        self.control_states = [-1] * self.num_nodes
+        self.global_control_states = [-1] * self.num_nodes
 
         self.game_time = 0
         self.game_scores = np.zeros(2)
@@ -204,9 +261,9 @@ class Everglades(gym.Env):
 
         self.conn.send(evgcommands.Go(self.conn.guid))
 
-        is_game_started = False
+        waiting_for_action = False
         _counter = 0
-        while not is_game_started:
+        while not waiting_for_action:
             waiting_for_action, is_game_started, is_game_over = self.update_state()
             _counter += 1
             if _counter > 5:
@@ -239,7 +296,7 @@ class Everglades(gym.Env):
                 msgs_by_type[msg_type] = []
             msgs_by_type[msg_type].append(msg)
 
-        logger.info('Message received types {}'.format(msgs_by_type.keys()))
+        logger.debug('Message received types {}'.format(msgs_by_type.keys()))
 
         for type in msgs_by_type:
             if type in self.message_parsing_funcs:
@@ -249,7 +306,8 @@ class Everglades(gym.Env):
             elif type == str(evgtypes.GoodBye.__name__):
                 is_game_over = True
             elif type == str(evgtypes.NewClientACK.__name__):
-                is_game_started = True
+                # is_game_started = True
+                pass
             elif type == str(evgtypes.TimeStamp.__name__):
                 self.game_time = max([msg.time for msg in msgs_by_type[type]])
             else:
@@ -264,9 +322,9 @@ class Everglades(gym.Env):
         for i in range(self.num_nodes):
             node_num = i + 1
             node_def = self.node_defs[node_num]
-            is_fortress = node_def['is_fortress']
-            is_watchtower = node_def['is_watchtower']
-            control_pct = self.control_states[i]
+            is_fortress = 1 if node_def['is_fortress'] else 0
+            is_watchtower = 1 if node_def['is_watchtower'] else 0
+            control_pct = float(self.control_states[i])
 
             node_state = np.array([is_fortress, is_watchtower, control_pct])
             state = np.concatenate([state, node_state])
@@ -275,12 +333,12 @@ class Everglades(gym.Env):
         # node loc, class, health, in transit, in combat
         # opp state
         # node loc, class, in_transit
-        state = np.concatenate([state, self.unit_definitions, self.opp_unit_definitions])
+        state = np.concatenate([state, self.unit_definitions.flatten(), self.opp_unit_definitions.flatten()])
 
         return state
 
     def initialize_groups(self, msg):
-        logger.info(f'~~~Initializing groups:\n{json.dumps(msg.__dict__)}')
+        logger.debug(f'~~~Initializing groups:\n{json.dumps(msg.__dict__)}')
         is_for_player = msg.player == self.player_num
         group_defs, unit_defs = self.get_definitions(msg.player)
 
@@ -290,10 +348,15 @@ class Everglades(gym.Env):
             group_defs[group_num] = []
 
         for start_id, group_type, count in zip(msg.start, msg.types, msg.count):
+            if count == 0:
+                continue
+
             group_type_num = self.unit_classes.index(group_type.lower())
             state = np.array([int(msg.node), group_type_num, 100, 0, 0])
+            if start_id > 100:
+                start_id -= 100
             for i in range(count):
-                id = count + i
+                id = start_id + i - 1
                 # node loc, class, health, in transit, in combat
                 unit_defs[id] = state
                 group_defs[group_num].append(id)

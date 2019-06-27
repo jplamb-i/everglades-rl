@@ -3,23 +3,29 @@ import numpy as np
 import time
 import gym
 import gym_everglades
+from logging import getLogger
 
 from resources.logger import get_logger
+
+logger = getLogger()
 
 
 class RandomAgent:
     def __init__(self, actions):
         self.actions = actions
+        self.low = actions.low[0]
+        self.high = actions.high[0]
+        self.shape = actions.shape
 
     def get_action(self, obs):
-        return np.random.choice(self.actions)
+        return np.random.randint(self.low, self.high, self.shape, dtype=np.int).reshape(-1, 1)
 
 
 def main():
     env_config = {
         'player_num': int(os.getenv('PLAYER_NUM', 1)),
         'game_config': {
-            'await_connection_time': 0,
+            'await_connection_time': 120,
             'server_address': 'server',
             'pub_socket': str(os.getenv("PUB_SOCKET", "5555")),
             'sub_socket': '5563',

@@ -6,6 +6,7 @@ import gym_everglades
 from logging import getLogger
 
 from resources.logger import get_logger
+# import docker
 
 logger = getLogger()
 
@@ -21,12 +22,12 @@ class RandomAgent:
         return np.random.randint(self.low, self.high, self.shape, dtype=np.int).reshape(-1, 1)
 
 
-def main():
+def main(run_local=False):
     env_config = {
         'player_num': int(os.getenv('PLAYER_NUM', 1)),
         'game_config': {
             'await_connection_time': 120,
-            'server_address': 'server',
+            'server_address':  'localhost' if run_local else 'server',
             'pub_socket': str(os.getenv("PUB_SOCKET", "5555")),
             'sub_socket': '5563',
             'unit_config': {
@@ -36,23 +37,26 @@ def main():
             }
         },
     }
-    print('Starting game for player {}'.format(os.getenv('PLAYER_NUM')))
+    logger.info('Starting game for player {}'.format(os.getenv('PLAYER_NUM')))
+
     env = gym.make('everglades-v0', env_config=env_config)
-    obs = env.reset()
     agent = RandomAgent(env.action_space)
 
-    rewards = []
-    done = False
-    st_time = time.time()
-    while not done:
-        action = agent.get_action(obs)
-        obs, reward, done, info = env.step(action)
-        rewards.append(reward)
+    for i in range(100):
+        obs = env.reset()
 
-    end_time = time.time()
-    print('Game completed')
-    print('FPS: {:.2f}'.format(len(rewards) / (end_time - st_time)))
-    print('Reward:\n\tmean/median: {:.2f}/{:.2f}\n\tmin/max: {:.2f}/{:.2f}'.format(np.mean(rewards), np.median(rewards),
+        rewards = []
+        done = False
+        st_time = time.time()
+        while not done:
+            action = agent.get_action(obs)
+            obs, reward, done, info = env.step(action)
+            rewards.append(reward)
+
+        end_time = time.time()
+        logger.info('Game completed')
+        logger.info('Steps/sec: {:.2f}'.format(len(rewards) / (end_time - st_time)))
+        logger.info('Reward:\n\tmean/median: {:.2f}/{:.2f}\n\tmin/max: {:.2f}/{:.2f}'.format(np.mean(rewards), np.median(rewards),
                                                                                    np.min(rewards), np.max(rewards)))
 
 

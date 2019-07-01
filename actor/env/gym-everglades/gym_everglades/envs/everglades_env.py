@@ -6,6 +6,7 @@ from logging import getLogger
 import numpy as np
 from time import sleep
 import json
+import math
 
 logger = getLogger()
 
@@ -106,17 +107,7 @@ class Everglades(gym.Env):
         self.group_definitions = {}
         self.opp_group_definitions = {}
 
-        self.unit_to_group = {}
-        self.unit_definitions = np.zeros((self.num_units, 5))
-        self.opp_unit_definitions = np.zeros((self.num_units, 3))
-
-        self.control_states = [-1] * self.num_nodes
-        self.global_control_states = [-1] * self.num_nodes
-
-        self.game_time = 0
-        self.game_scores = np.zeros(2)
-        self.game_conclusion = 0
-        self.winning_player = 0
+        self.setup_state_trackers()
 
         self.observation_space = None
 
@@ -130,7 +121,7 @@ class Everglades(gym.Env):
             evgtypes.PY_GAME_Scores.__name__: self.update_game_score,
             evgtypes.PY_NODE_Knowledge.__name__: self.update_node_knowledge,
             evgtypes.PY_GROUP_Knowledge.__name__: self.update_opp_group_knowledge,
-            evgtypes.PubError.__name__: lambda msg: logger.warning('Bad message {}'.format(msg)),
+            evgtypes.PubError.__name__: lambda msg: logger.debug('Bad message {}'.format(msg)),
         }
 
         self.build_obs_space()
@@ -199,15 +190,28 @@ class Everglades(gym.Env):
             high=np.concatenate([[self.max_game_time], control_point_state_high, unit_state_high, opp_unit_state_high])
         )
 
+    def setup_state_trackers(self):
+        self.unit_to_group = {}
+        self.unit_definitions = np.zeros((self.num_units, 5))
+        self.opp_unit_definitions = np.zeros((self.num_units, 3))
+
+        self.control_states = [-1] * self.num_nodes
+        self.global_control_states = [-1] * self.num_nodes
+
+        self.game_time = 0
+        self.game_scores = np.zeros(2)
+        self.game_conclusion = 0
+        self.winning_player = 0
+
     def step(self, action):
         # todo validate action
         [self.act(unit_id, node_id) for unit_id, node_id in enumerate(action)]
 
         self.conn.send(evgcommands.EndTurn(self.conn.guid))
 
-        waiting_for_action = False
+        waiting_for_action, is_game_over = False, False
         _counter = 0
-        while not waiting_for_action:
+        while not waiting_for_action and not is_game_over:
             waiting_for_action, is_game_started, is_game_over = self.update_state()
             _counter += 1
             if _counter > 30:
@@ -215,12 +219,15 @@ class Everglades(gym.Env):
 
         state = self.build_state()
 
+        logger.info('Control states: {}'.format(self.control_states))
+
         info = {
             'friendly_units_rem': len(np.where(self.unit_definitions[:, 2] > 0)),
             'opp_units_rem': len(np.where(self.opp_unit_definitions[:, 2] > 0)),
         }
 
         if is_game_over:
+            logger.info('Game ended')
             info['game_ending_condition'] = self.game_conclusion
 
         reward = 1 if self.winning_player == self.player_num else 0
@@ -237,21 +244,7 @@ class Everglades(gym.Env):
             self.unit_configs = seed
 
     def reset(self):
-        self.group_definitions = {}
-        self.opp_group_definitions = {}
-
-        self.unit_to_group = {}
-
-        self.unit_definitions = np.zeros((self.num_units, 5))
-        self.opp_unit_definitions = np.zeros((self.num_units, 3))
-
-        self.control_states = [-1] * self.num_nodes
-        self.global_control_states = [-1] * self.num_nodes
-
-        self.game_time = 0
-        self.game_scores = np.zeros(2)
-        self.game_conclusion = 0
-        self.winning_player = 0
+        self.setup_state_trackers()
 
         for class_type, count in self.unit_configs.items():
             for i in range(count):
@@ -304,6 +297,7 @@ class Everglades(gym.Env):
             elif type == str(evgtypes.TurnStart.__name__):
                 waiting_for_action = True
             elif type == str(evgtypes.GoodBye.__name__):
+                logger.info('Goodbye received')
                 is_game_over = True
             elif type == str(evgtypes.NewClientACK.__name__):
                 # is_game_started = True
@@ -335,6 +329,8 @@ class Everglades(gym.Env):
         # node loc, class, in_transit
         state = np.concatenate([state, self.unit_definitions.flatten(), self.opp_unit_definitions.flatten()])
 
+        self.verify_state(state)
+
         return state
 
     def initialize_groups(self, msg):
@@ -354,7 +350,8 @@ class Everglades(gym.Env):
             group_type_num = self.unit_classes.index(group_type.lower())
             state = np.array([int(msg.node), group_type_num, 100, 0, 0])
             if start_id > 100:
-                start_id -= 100
+                # NOTE: this is a hack because the server doesn't reset group IDs after a game
+                start_id -= int(math.floor(start_id / 100.0)) * 100
             for i in range(count):
                 id = start_id + i - 1
                 # node loc, class, health, in transit, in combat
@@ -407,10 +404,10 @@ class Everglades(gym.Env):
         self.game_scores = np.array([msg.player1, msg.player2])
         # 1: time expired, 2: base captured, 3: units eliminated
         self.game_conclusion = msg.status
-        self.winning_player = np.argmax(self.game_scores) + 1
+        self.winning_player = np.argmax(self.game_scores) + 1 if (self.game_scores[0] == self.game_scores).all() else -1
 
     def update_node_knowledge(self, msg):
-        logger.info(f'~~~Node knowledge update:\n{json.dumps(msg.__dict__)}')
+        logger.debug(f'~~~Node knowledge update:\n{json.dumps(msg.__dict__)}')
         is_players = msg.player == self.player_num
         for node, knowledge, controller, percent in zip(msg.nodes, msg.knowledge, msg.controller, msg.percent):
             self.global_control_states[node - 1] = percent
@@ -431,3 +428,6 @@ class Everglades(gym.Env):
             unit_definitions = self.opp_unit_definitions
 
         return group_definitions, unit_definitions
+
+    def verify_state(self, state):
+        return self.observation_space.contains(state)

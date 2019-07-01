@@ -1,6 +1,10 @@
-FROM python:3.6-slim-stretch
+#FROM python:3.6-slim-stretch
+FROM python:3.6-stretch
 
-RUN mkdir env resources
+# for ray
+RUN apt-get update && apt-get install -y libglib2.0-0 libsm6 libxrender1 libxext6 sysstat
+
+RUN mkdir env resources results
 
 COPY requirements.txt .
 
@@ -10,11 +14,12 @@ COPY env /env
 
 RUN pip install -e /env/gym-everglades
 
-COPY random_agent.py .
+#COPY random_agent.py ./main.py
+COPY ray_agent.py ./main.py
 COPY resources/logger.py /resources
 
 EXPOSE 5555 5556 5563
 
 ENV PYTHONPATH "${PYTHONPATH}:/env"
 
-CMD python3 -u random_agent.py
+CMD python3 -u main.py

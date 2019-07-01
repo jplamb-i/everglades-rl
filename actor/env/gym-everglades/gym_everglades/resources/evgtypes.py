@@ -155,8 +155,9 @@ class PY_GROUP_TransferUnits:
 
 #--------------------------------------------------------------------
 class PY_NODE_ControlUpdate:
-    def __init__(self, node_, faction_, controlvalue_, controlled_):
+    def __init__(self, player_, node_, faction_, controlvalue_, controlled_):
         self.time = 0
+        self.player = player_
         self.node = node_ # the id for the node
         self.faction = faction_ # the id for the player's faction
         self.controlvalue = controlvalue_ # current control points at the node
@@ -164,7 +165,7 @@ class PY_NODE_ControlUpdate:
 
     @classmethod
     def from_message(cls, j):
-        return cls(j['node'], j['faction'], j['controlvalue'], j['controlled'])
+        return cls(j['player'], j['node'], j['faction'], j['controlvalue'], j['controlled'])
 
     @staticmethod
     def TypeId():

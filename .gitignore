@@ -4,3 +4,4 @@
 
 __pycache__/
 actor/env/gym-everglades/gym_everglades.egg-info/
+*.log

@@ -131,11 +131,10 @@ class Everglades(gym.Env):
             high=np.repeat(self.num_nodes, self.num_units)
         )
 
-        pub_addr = f'tcp://*:{self.pub_socket}'
-        sub_addr = f'tcp://{self.server_address}:{self.sub_socket}'
-        logger.info(f'Connecting to server at:\n\tPub Addr {pub_addr}\n\tSub Addr {sub_addr}')
+        self.pub_addr = f'tcp://*:{self.pub_socket}'
+        self.sub_addr = f'tcp://{self.server_address}:{self.sub_socket}'
 
-        self.conn = Connection(pub_addr, sub_addr, self.player_num, await_connection_time=self.await_connection_time)
+        self.conn = None
 
     def parse_game_config(self, config):
         """
@@ -160,27 +159,19 @@ class Everglades(gym.Env):
         # n x 100 (num_units)
         # [node loc, health, group?, in transit? in combat?]
         # what should node loc be during transit? fraction of node left or node arriving at?
-        unit_portion_low = np.array([1, 1, 0, 0, 0])  # node loc, class, health, in transit, in combat
-        unit_portion_high = np.array([self.num_nodes, len(self.unit_classes), 100, 1, 1])
+        #todo class should be a boolean
+        unit_portion_low = np.array([1, 0, 0, 0, 0])  # node loc, class, health, in transit, in combat
+        unit_portion_high = np.array([self.num_nodes, len(self.unit_classes) - 1, 100, 1, 1])
         unit_state_low = np.tile(unit_portion_low, self.num_units)
         unit_state_high = np.tile(unit_portion_high, self.num_units)
 
         unit_portion_low = np.array([-1, -1, 0])  # node loc, class, in_transit
-        unit_portion_high = np.array([self.num_nodes, len(self.unit_classes), 1])
+        unit_portion_high = np.array([self.num_nodes, len(self.unit_classes) - 1, 1])
         opp_unit_state_low = np.tile(unit_portion_low, self.num_units)
         opp_unit_state_high = np.tile(unit_portion_high, self.num_units)
 
-        control_point_portion_low = np.concatenate([
-            np.zeros(self.num_nodes),  # is fortress
-            np.zeros(self.num_nodes),  # is watchtower
-            np.repeat(-100, self.num_nodes)  # pct controlled by
-        ])
-
-        control_point_portion_high = np.concatenate([
-            np.ones(self.num_nodes),  # is fortress
-            np.ones(self.num_nodes),  # is watchtower
-            np.repeat(100, self.num_nodes)  # pct controlled by
-        ])
+        control_point_portion_low = np.array([0, 0, -100])
+        control_point_portion_high = np.array([1, 1, 100])
 
         control_point_state_low = np.tile(control_point_portion_low, self.num_nodes)
         control_point_state_high = np.tile(control_point_portion_high, self.num_nodes)
@@ -195,13 +186,13 @@ class Everglades(gym.Env):
         self.unit_definitions = np.zeros((self.num_units, 5))
         self.opp_unit_definitions = np.zeros((self.num_units, 3))
 
-        self.control_states = [-1] * self.num_nodes
-        self.global_control_states = [-1] * self.num_nodes
+        self.control_states = [0] * self.num_nodes
+        self.global_control_states = [0] * self.num_nodes
 
         self.game_time = 0
         self.game_scores = np.zeros(2)
         self.game_conclusion = 0
-        self.winning_player = 0
+        self.winning_player = -1
 
     def step(self, action):
         # todo validate action
@@ -230,7 +221,9 @@ class Everglades(gym.Env):
             logger.info('Game ended')
             info['game_ending_condition'] = self.game_conclusion
 
-        reward = 1 if self.winning_player == self.player_num else 0
+            reward = 1 if self.winning_player == self.player_num else 0
+        else:
+            reward = 0
 
         return state, reward, is_game_over, info
 
@@ -244,6 +237,9 @@ class Everglades(gym.Env):
             self.unit_configs = seed
 
     def reset(self):
+        if self.conn is None:
+            logger.info(f'Connecting to server at:\n\tPub Addr {self.pub_addr}\n\tSub Addr {self.sub_addr}')
+            self.conn = Connection(self.pub_addr, self.sub_addr, self.player_num, await_connection_time=self.await_connection_time)
         self.setup_state_trackers()
 
         for class_type, count in self.unit_configs.items():
@@ -338,7 +334,7 @@ class Everglades(gym.Env):
         is_for_player = msg.player == self.player_num
         group_defs, unit_defs = self.get_definitions(msg.player)
 
-        group_num = msg.group - 1
+        group_num = msg.group
 
         if group_num not in self.group_definitions:
             group_defs[group_num] = []
@@ -404,10 +400,10 @@ class Everglades(gym.Env):
         self.game_scores = np.array([msg.player1, msg.player2])
         # 1: time expired, 2: base captured, 3: units eliminated
         self.game_conclusion = msg.status
-        self.winning_player = np.argmax(self.game_scores) + 1 if (self.game_scores[0] == self.game_scores).all() else -1
+        self.winning_player = -1 if (self.game_scores[0] == self.game_scores).all() else np.argmax(self.game_scores)
 
     def update_node_knowledge(self, msg):
-        logger.debug(f'~~~Node knowledge update:\n{json.dumps(msg.__dict__)}')
+        logger.info(f'~~~Node knowledge update:\n{json.dumps(msg.__dict__)}')
         is_players = msg.player == self.player_num
         for node, knowledge, controller, percent in zip(msg.nodes, msg.knowledge, msg.controller, msg.percent):
             self.global_control_states[node - 1] = percent
@@ -430,4 +426,27 @@ class Everglades(gym.Env):
         return group_definitions, unit_definitions
 
     def verify_state(self, state):
-        return self.observation_space.contains(state)
+
+        if not self.observation_space.contains(state):
+            logger.info('Observation not within defined bounds')
+            logger.info(self.pretty_print_state())
+
+        assert self.observation_space.shape == state.shape
+
+    def pretty_print_state(self):
+        string = """
+        Game time: {}
+        """.format(self.max_game_time - self.game_time)
+        for i in range(self.num_nodes):
+            node_num = i + 1
+            node_def = self.node_defs[node_num]
+            is_fortress = 1 if node_def['is_fortress'] else 0
+            is_watchtower = 1 if node_def['is_watchtower'] else 0
+            control_pct = float(self.control_states[i])
+            string += '\n{}) {}, {}, {}'.format(i, is_fortress, is_watchtower, int(control_pct))
+        for i, state in enumerate(self.unit_definitions):
+            string += '\nUnit {}: {}'.format(i, state)
+        for i, state in enumerate(self.opp_unit_definitions):
+            string += '\nOpp Unit {}: {}'.format(i, state)
+
+        return string

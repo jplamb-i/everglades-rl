@@ -121,14 +121,14 @@ class Everglades(gym.Env):
             evgtypes.PY_GAME_Scores.__name__: self.update_game_score,
             evgtypes.PY_NODE_Knowledge.__name__: self.update_node_knowledge,
             evgtypes.PY_GROUP_Knowledge.__name__: self.update_opp_group_knowledge,
-            evgtypes.PubError.__name__: lambda msg: logger.info('Bad message {}'.format(json.dumps(msg.__dict__))),
+            evgtypes.PubError.__name__: self.handle_bad_message,
         }
 
         self.build_obs_space()
 
         self.action_space = Box(
-            low=np.zeros(self.num_units),
-            high=np.repeat(self.num_nodes, self.num_units)
+            low=np.ones(self.num_units),
+            high=np.repeat(self.num_nodes + 1, self.num_units)
         )
 
         self.pub_addr = f'tcp://*:{self.pub_socket}'
@@ -165,20 +165,15 @@ class Everglades(gym.Env):
         unit_state_low = np.tile(unit_portion_low, self.num_units)
         unit_state_high = np.tile(unit_portion_high, self.num_units)
 
-        unit_portion_low = np.array([-1, -1, 0])  # node loc, class, in_transit
-        unit_portion_high = np.array([self.num_nodes, len(self.unit_classes) - 1, 1])
-        opp_unit_state_low = np.tile(unit_portion_low, self.num_units)
-        opp_unit_state_high = np.tile(unit_portion_high, self.num_units)
-
-        control_point_portion_low = np.array([0, 0, -100])
-        control_point_portion_high = np.array([1, 1, 100])
+        control_point_portion_low = np.array([0, 0, -100, -1])  # is fortress, is watchtower, percent controlled, num opp units
+        control_point_portion_high = np.array([1, 1, 100, self.num_units])
 
         control_point_state_low = np.tile(control_point_portion_low, self.num_nodes)
         control_point_state_high = np.tile(control_point_portion_high, self.num_nodes)
 
         self.observation_space = Box(
-            low=np.concatenate([[0], control_point_state_low, unit_state_low, opp_unit_state_low]),
-            high=np.concatenate([[self.max_game_time], control_point_state_high, unit_state_high, opp_unit_state_high])
+            low=np.concatenate([[0], control_point_state_low, unit_state_low]),
+            high=np.concatenate([[self.max_game_time], control_point_state_high, unit_state_high])
         )
 
     def setup_state_trackers(self):
@@ -189,7 +184,8 @@ class Everglades(gym.Env):
         # self.opp_unit_definitions = {i: {'group_id': None, 'unit_id': None, 'state': [0] * 3} for i in range(self.num_units)}
         # self.opp_unit_states = np.zeros((self.num_units, 3))
         self.units = UnitDefs()
-        self.opp_units = UnitDefs()
+        self.opp_units_at_nodes = [0] * self.num_nodes
+        # self.opp_units.add_units([i for i in range(100)], [i for i in range(100)], [OppUnitState() for i in range(100)])
 
         self.control_states = [0] * self.num_nodes
         self.global_control_states = [0] * self.num_nodes
@@ -200,8 +196,8 @@ class Everglades(gym.Env):
         self.winning_player = -1
 
     def step(self, action):
-        # todo validate action
-        [self.act(unit_id, node_id) for unit_id, node_id in enumerate(action)]
+        logger.debug('Action shape {}'.format(action.shape))
+        [self.act(index, node_id) for index, node_id in enumerate(action)]
 
         self.conn.send(evgcommands.EndTurn(self.conn.guid))
 
@@ -217,7 +213,7 @@ class Everglades(gym.Env):
 
         info = {
             'friendly_units_rem': len(np.where(self.units.get_all_states()[:, 2] > 0)),
-            'opp_units_rem': len(np.where(self.opp_units.get_all_states()[:, 2] > 0)),
+            # 'opp_units_rem': len(np.where(self.opp_units.get_all_states()[:, 2] > 0)),
         }
 
         if is_game_over:
@@ -228,14 +224,14 @@ class Everglades(gym.Env):
         else:
             reward = 0
 
-        self.print_game_state()
-
         return state, reward, is_game_over, info
 
-    def act(self, unit_id, node_id):
-        # logger.info('Acting foor unit {} to node {}'.format(unit_id, node_id))
-        group_ids = self.units.get_group_ids(unit_ids=unit_id)
-        [self.conn.send(evgcommands.PY_GROUP_MoveToNode(self.conn.guid, group_id, node_id)) for group_id in group_ids]
+    def act(self, index, node_id):
+        units = self.units.get_units(inds=index)
+        for unit in units:
+            if unit.state.health > 0:
+                logger.debug('Acting for unit (ind={}, group={}) to node {}'.format(index, unit.group_id, node_id))
+                self.conn.send(evgcommands.PY_GROUP_MoveToNode(self.conn.guid, unit.group_id, node_id))
 
     def seed(self, seed=None):
         if seed is not None and type(seed) == dict:
@@ -258,21 +254,27 @@ class Everglades(gym.Env):
 
         waiting_for_action = False
         _counter = 0
-        while not waiting_for_action:
-            waiting_for_action, is_game_started, is_game_over = self.update_state()
+        while not waiting_for_action or len(self.units) < 100:
+            _waiting_for_action, _, _ = self.update_state()
+            waiting_for_action = _waiting_for_action if _waiting_for_action else waiting_for_action
             _counter += 1
-            if _counter > 5:
+            if _counter > 50:
                 logger.warning(f'Unable to start game after {_counter} attempts')
-            if _counter > 10:
+            if _counter > 100:
                 raise TimeoutError('Failed to start a new game')
-            sleep(1)
+            sleep(.1)
+
+        logger.info('Game initialized')
+        logger.info('Unit defs. Num: {}, Min: {}, Max: {}'.format(len(self.units.inds), min(self.units.group_ids), max(self.units.group_ids)))
+        # logger.info('Opp unit. Num: {}, Min: {}, Max: {}'.format(len(self.opp_units.inds), min(self.units.group_ids), max(self.units.group_ids)))
 
         state = self.build_state()
 
         return state
 
     def render(self, mode='human'):
-        pass
+        if mode == 'string':
+            return self.print_game_state()
 
     def close(self):
         if self.conn is not None:
@@ -323,15 +325,14 @@ class Everglades(gym.Env):
             is_fortress = 1 if node_def['is_fortress'] else 0
             is_watchtower = 1 if node_def['is_watchtower'] else 0
             control_pct = float(self.control_states[i])
+            num_opp_units = self.opp_units_at_nodes[i]
 
-            node_state = np.array([is_fortress, is_watchtower, control_pct])
+            node_state = np.array([is_fortress, is_watchtower, control_pct, num_opp_units])
             state = np.concatenate([state, node_state])
 
         # unit state
         # node loc, class, health, in transit, in combat
-        # opp state
-        # node loc, class, in_transit
-        state = np.concatenate([state, self.units.get_all_states().flatten(), self.opp_units.get_all_states().flatten()])
+        state = np.concatenate([state, self.units.get_all_states().flatten()])
 
         self.verify_state(state)
 
@@ -339,8 +340,8 @@ class Everglades(gym.Env):
 
     def initialize_groups(self, msg):
         logger.debug(f'~~~Initializing groups:\n{json.dumps(msg.__dict__)}')
-        is_for_player = msg.player == self.player_num
-        units = self.units if is_for_player else self.opp_units
+        if msg.player != self.player_num:
+            return
 
         group_num = msg.group
 
@@ -349,36 +350,41 @@ class Everglades(gym.Env):
                 continue
 
             group_type_num = self.unit_classes.index(group_type.lower())
-            state = np.array([int(msg.node), group_type_num, 100, 0, 0])
-            units.add_units([start_id + i for i in range(count)], [group_num] * count, [state] * count)
+
+            state = UnitState(node_loc=int(msg.node), health=100, class_type=group_type_num, in_combat=0, in_transit=0)
+
+            self.units.add_units([start_id + i for i in range(count)], [group_num] * count, [state] * count)
 
     def update_group_locs(self, msg):
-        logger.info(f'~~~Updating group locations:\n{json.dumps(msg.__dict__)}')
+        logger.debug(f'~~~Updating group locations:\n{json.dumps(msg.__dict__)}')
+        if msg.player != self.player_num:
+            return
 
         in_transit = msg.status == 'IN_TRANSIT'
         if msg.status == 'IN_TRANSIT':
-            node_loc = msg.start + .5
+            node_loc = (msg.start + msg.destination) / 2.
         elif msg.status == 'ARRIVED':
             node_loc = msg.destination
         else:
             node_loc = msg.start
 
-        units = self.units.get_units(group_ids=[msg.group])
+        units = self.units.get_units(group_ids=msg.group)
         for unit in units:
             state = unit.state
-            state[0] = node_loc
-            state[3] = in_transit
+            state.node_loc = node_loc
+            state.in_transit = in_transit
             unit.add_state(state)
 
     def update_group_combat(self, msg):
-        logger.info(f'~~~Group combat update:\n{json.dumps(msg.__dict__)}')
-        is_for_player = msg.player == self.player_num
-        unit_defs = self.units if is_for_player else self.opp_units
-        units = unit_defs.get_units(unit_ids=msg.units)
+        logger.debug(f'~~~Group combat update:\n{json.dumps(msg.__dict__)}')
+        if msg.player != self.player_num:
+            return
+
+        units = self.units.get_units(unit_ids=msg.units)
 
         for unit, health in zip(units, msg.health):
             state = unit.state
-            state[2] = health
+            state.health = health
             unit.add_state(state)
 
     def create_new_group(self, msg):
@@ -411,8 +417,23 @@ class Everglades(gym.Env):
                 self.control_states[node - 1] = percent
 
     def update_opp_group_knowledge(self, msg):
-        logger.info(f'~~~Opponent knowledge update:\n{json.dumps(msg.__dict__)}')
-        logger.warning('Handling of this message not implemented')
+        logger.debug(f'~~~Opponent knowledge update:\n{json.dumps(msg.__dict__)}')
+        if msg.player != self.player_num:
+            return
+
+        num_units = sum(msg.ucount)
+        node_num = msg.node1 - 1
+        tar_node_num = msg.node2 - 1
+
+        if tar_node_num < 0:
+            self.opp_units_at_nodes[node_num] = num_units
+        else:
+            self.opp_units_at_nodes[node_num] = num_units / 2.
+            self.opp_units_at_nodes[tar_node_num] = num_units / 2.
+
+    def handle_bad_message(self, msg):
+        if 'movetonode' not in msg.message.lower():
+            logger.info('Bad message {}'.format(json.dumps(msg.__dict__)))
 
     def verify_state(self, state):
         if not self.observation_space.contains(state):
@@ -423,33 +444,53 @@ class Everglades(gym.Env):
 
     def print_game_state(self):
         units_at_node = {}
-        for i in range(self.num_nodes):
-            units_at_node[i] = 0
-        for i, unit_state in enumerate(self.units.get_all_states()):
-            node_loc = unit_state[0]
+        for i, unit in enumerate(self.units.get_all_units()):
+            node_loc = unit.state.node_loc
+            if node_loc not in units_at_node:
+                units_at_node[node_loc] = 0
             units_at_node[node_loc] += 1
 
         string = 'Game state:'
-        for i in range(self.num_nodes):
-            node_num = i + 1
-            string += '\n{} ({} %): {} units'.format(node_num, self.control_states[i], units_at_node[i])
+        for node_num, num_units in sorted(units_at_node.items()):
+            node_num = float(node_num)
+            string += '\n{} ({:.1f} %): {} units, {} opp units'.format(
+                int(node_num) if node_num.is_integer() else node_num,
+                self.control_states[int(node_num) - 1] if node_num.is_integer() else 0,
+                num_units,
+                self.opp_units_at_nodes[int(node_num) - 1] if node_num.is_integer() else 0)
 
-        logger.info(string)
+        return string
+
+
+from copy import deepcopy
+
+
+class UnitState:
+    def __init__(self, node_loc=1, class_type=1, health=100, in_transit=0, in_combat=0):
+        # node loc, class, health, in transit, in combat
+        self.node_loc = node_loc
+        self.class_type = class_type
+        self.health = health
+        self.in_transit = in_transit
+        self.in_combat = in_combat
+
+    def as_array(self):
+        return np.array([self.node_loc, self.class_type, self.health, self.in_transit, self.in_combat])
 
 
 class Unit:
-    def __init__(self, id, group_id, ind):
+    def __init__(self, id, group_id, ind, is_opp=False):
         self.id = id
         self.group_id = group_id
         self.ind = ind
-        self.state_history = []
+        self.state_history = [UnitState() if not is_opp else OppUnitState()]
 
     def add_state(self, state):
         self.state_history.append(state)
 
     @property
     def state(self):
-        return self.state_history[-1].copy()
+        return deepcopy(self.state_history[-1])
 
 
 class UnitDefs:
@@ -497,7 +538,7 @@ class UnitDefs:
         assert id_list[id_ind] == ind
 
     def get_units(self, **kwargs):
-        if not self._validate_args(kwargs):
+        if not self._validate_args(**kwargs):
             raise Exception('Received unexpected keyword argument: {}'.format(kwargs.keys()))
 
         inds = kwargs.get('inds')
@@ -507,13 +548,13 @@ class UnitDefs:
         if inds is not None:
             try:
                 return self._get_units_by_ind(inds)
-            except:
+            except TypeError:
                 return self._get_units_by_ind([inds])
 
-        def get_by_key(keys, id_list):
+        def get_by_key(id_list, keys):
             try:
                 return self._get_units_by_ind([id_list[key] for key in keys])
-            except:
+            except TypeError:
                 return self._get_units_by_ind([id_list[key] for key in [keys]])
 
         if unit_ids is not None:
@@ -536,10 +577,16 @@ class UnitDefs:
         return [unit.ind for unit in self.get_units(**kwargs)]
 
     def get_states(self, **kwargs):
-        return [unit.state for unit in self.get_units(**kwargs)]
+        return [unit.state.as_array() for unit in self.get_units(**kwargs)]
 
     def get_all_states(self):
-        return np.array(self.get_states(inds=range(100))).reshape(100, -1)
+        return np.array(self.get_states(inds=[i for i in range(100)])).reshape(100, -1)
 
-    def _validate_args(self, kwargs):
-        return len([True for key, val in self.valid_kwargs if key in kwargs and val is not None]) > 0
+    def get_all_units(self):
+        return self.get_units(inds=[i for i in range(100)])
+
+    def _validate_args(self, **kwargs):
+        return len([True for key, val in kwargs.items() if key in self.valid_kwargs and val is not None]) > 0
+
+    def __len__(self):
+        return len(self.inds)

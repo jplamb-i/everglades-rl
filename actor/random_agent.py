@@ -19,7 +19,7 @@ class RandomAgent:
         self.shape = actions.shape
 
     def get_action(self, obs):
-        return np.random.randint(self.low, self.high, self.shape, dtype=np.int).reshape(-1, 1)
+        return np.random.randint(self.low, self.high, self.shape, dtype=np.int)
 
 
 def main(run_local=False):
@@ -48,10 +48,15 @@ def main(run_local=False):
         rewards = []
         done = False
         st_time = time.time()
+        step_counter = 0
         while not done:
             action = agent.get_action(obs)
             obs, reward, done, info = env.step(action)
             rewards.append(reward)
+
+            step_counter += 1
+            if step_counter % 10 == 0:
+                logger.info(env.render(mode='string'))
 
         end_time = time.time()
         logger.info('Game completed')

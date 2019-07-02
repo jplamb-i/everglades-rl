@@ -104,8 +104,8 @@ class Everglades(gym.Env):
             }
         assert sum(self.unit_configs.values()) == self.num_units
 
-        self.group_definitions = {}
-        self.opp_group_definitions = {}
+        # self.group_definitions = {}
+        # self.opp_group_definitions = {}
 
         self.setup_state_trackers()
 
@@ -216,8 +216,8 @@ class Everglades(gym.Env):
         state = self.build_state()
 
         info = {
-            'friendly_units_rem': len(np.where(self.unit_states[:, 2] > 0)),
-            'opp_units_rem': len(np.where(self.opp_unit_states[:, 2] > 0)),
+            'friendly_units_rem': len(np.where(self.units.get_all_states()[:, 2] > 0)),
+            'opp_units_rem': len(np.where(self.opp_units.get_all_states()[:, 2] > 0)),
         }
 
         if is_game_over:
@@ -234,8 +234,8 @@ class Everglades(gym.Env):
 
     def act(self, unit_id, node_id):
         # logger.info('Acting foor unit {} to node {}'.format(unit_id, node_id))
-        group_id = self.unit_to_group[unit_id]
-        self.conn.send(evgcommands.PY_GROUP_MoveToNode(self.conn.guid, group_id, node_id))
+        group_ids = self.units.get_group_ids(unit_ids=unit_id)
+        [self.conn.send(evgcommands.PY_GROUP_MoveToNode(self.conn.guid, group_id, node_id)) for group_id in group_ids]
 
     def seed(self, seed=None):
         if seed is not None and type(seed) == dict:
@@ -268,9 +268,6 @@ class Everglades(gym.Env):
             sleep(1)
 
         state = self.build_state()
-
-        logger.info('Group IDs: {}'.format(self.group_definitions.keys()))
-        logger.info('Unit to group IDs: {}'.format(self.unit_to_group.keys()))
 
         return state
 
@@ -334,7 +331,7 @@ class Everglades(gym.Env):
         # node loc, class, health, in transit, in combat
         # opp state
         # node loc, class, in_transit
-        state = np.concatenate([state, self.unit_states.flatten(), self.opp_unit_states.flatten()])
+        state = np.concatenate([state, self.units.get_all_states().flatten(), self.opp_units.get_all_states().flatten()])
 
         self.verify_state(state)
 
@@ -375,10 +372,14 @@ class Everglades(gym.Env):
 
     def update_group_combat(self, msg):
         logger.info(f'~~~Group combat update:\n{json.dumps(msg.__dict__)}')
-        _, unit_defs = self.get_definitions(msg.player)
+        is_for_player = msg.player == self.player_num
+        unit_defs = self.units if is_for_player else self.opp_units
+        units = unit_defs.get_units(unit_ids=msg.units)
 
-        for id, health in zip(msg.units, msg.health):
-            unit_defs[id][2] = health
+        for unit, health in zip(units, msg.health):
+            state = unit.state
+            state[2] = health
+            unit.add_state(state)
 
     def create_new_group(self, msg):
         logger.warning('Create new group not supported')
@@ -411,52 +412,20 @@ class Everglades(gym.Env):
 
     def update_opp_group_knowledge(self, msg):
         logger.info(f'~~~Opponent knowledge update:\n{json.dumps(msg.__dict__)}')
-        _, unit_defs = self.get_definitions(msg.player)
         logger.warning('Handling of this message not implemented')
 
-    def get_definitions(self, team_num):
-        if team_num == self.player_num:
-            group_definitions = self.group_definitions
-            unit_definitions = self.unit_definitions
-            unit_states = self.unit_states
-        else:
-            group_definitions = self.opp_group_definitions
-            unit_definitions = self.opp_unit_definitions
-            unit_states = self.opp_unit_states
-
-        return group_definitions, unit_definitions, unit_states
-
     def verify_state(self, state):
-
         if not self.observation_space.contains(state):
             logger.info('Observation not within defined bounds')
-            logger.info(self.pretty_print_state())
+            logger.info(self.print_game_state())
 
         assert self.observation_space.shape == state.shape
-
-    def pretty_print_state(self):
-        string = """
-        Game time: {}
-        """.format(self.max_game_time - self.game_time)
-        for i in range(self.num_nodes):
-            node_num = i + 1
-            node_def = self.node_defs[node_num]
-            is_fortress = 1 if node_def['is_fortress'] else 0
-            is_watchtower = 1 if node_def['is_watchtower'] else 0
-            control_pct = float(self.control_states[i])
-            string += '\n{}) {}, {}, {}'.format(i, is_fortress, is_watchtower, int(control_pct))
-        for i, state in enumerate(self.unit_definitions):
-            string += '\nUnit {}: {}'.format(i, state)
-        for i, state in enumerate(self.opp_unit_definitions):
-            string += '\nOpp Unit {}: {}'.format(i, state)
-
-        return string
 
     def print_game_state(self):
         units_at_node = {}
         for i in range(self.num_nodes):
             units_at_node[i] = 0
-        for i, unit_state in enumerate(self.unit_definitions):
+        for i, unit_state in enumerate(self.units.get_all_states()):
             node_loc = unit_state[0]
             units_at_node[node_loc] += 1
 
@@ -540,16 +509,18 @@ class UnitDefs:
                 return self._get_units_by_ind(inds)
             except:
                 return self._get_units_by_ind([inds])
-        elif unit_ids is not None:
+
+        def get_by_key(keys, id_list):
             try:
-                return self._get_units_by_ind([self.ids[unit_id] for unit_id in unit_ids])
+                return self._get_units_by_ind([id_list[key] for key in keys])
             except:
-                return self._get_units_by_ind([self.ids[unit_id] for unit_id in [unit_ids]])
+                return self._get_units_by_ind([id_list[key] for key in [keys]])
+
+        if unit_ids is not None:
+            return get_by_key(self.ids, unit_ids)
         elif group_ids is not None:
-            try:
-                return self._get_units_by_ind([self.ids[group_id] for group_id in group_ids])
-            except:
-                return self._get_units_by_ind([self.ids[group_id] for group_id in [group_ids]])
+            return get_by_key(self.group_ids, group_ids)
+
         return []
 
     def _get_units_by_ind(self, inds):
@@ -566,6 +537,9 @@ class UnitDefs:
 
     def get_states(self, **kwargs):
         return [unit.state for unit in self.get_units(**kwargs)]
+
+    def get_all_states(self):
+        return np.array(self.get_states(inds=range(100))).reshape(100, -1)
 
     def _validate_args(self, kwargs):
         return len([True for key, val in self.valid_kwargs if key in kwargs and val is not None]) > 0

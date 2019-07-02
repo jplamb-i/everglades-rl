@@ -220,7 +220,7 @@ class Everglades(gym.Env):
             logger.info('Game ended')
             info['game_ending_condition'] = self.game_conclusion
 
-            reward = 1 if self.winning_player == self.player_num else 0
+            reward = self.game_scores[self.player_num]
         else:
             reward = 0
 
@@ -286,6 +286,8 @@ class Everglades(gym.Env):
         is_game_over = False
         is_game_started = False
 
+        self.opp_units_at_nodes = [0] * self.num_nodes
+
         msgs_by_type = {}
         for msg in msgs:
             if hasattr(msg, 'player') and msg.player != self.player_num:
@@ -310,8 +312,11 @@ class Everglades(gym.Env):
                 pass
             elif type == str(evgtypes.TimeStamp.__name__):
                 self.game_time = max([msg.time for msg in msgs_by_type[type]])
+                # NOTE: This is to avoid setting a bad time value when the server sends a bad timestamp
+                if self.game_time > self.max_game_time:
+                    self.game_time = self.max_game_time
             else:
-                logger.warning(f'Unrecognized message type {type}')
+                logger.debug(f'Unrecognized message type {type}')
 
         return waiting_for_action, is_game_started, is_game_over
 
@@ -412,6 +417,9 @@ class Everglades(gym.Env):
         logger.debug(f'~~~Node knowledge update:\n{json.dumps(msg.__dict__)}')
         is_players = msg.player == self.player_num
         for node, knowledge, controller, percent in zip(msg.nodes, msg.knowledge, msg.controller, msg.percent):
+            if controller == self.opposing_player_num:
+                percent = -percent
+
             self.global_control_states[node - 1] = percent
             if is_players:
                 self.control_states[node - 1] = percent
@@ -426,10 +434,10 @@ class Everglades(gym.Env):
         tar_node_num = msg.node2 - 1
 
         if tar_node_num < 0:
-            self.opp_units_at_nodes[node_num] = num_units
+            self.opp_units_at_nodes[node_num] += num_units
         else:
-            self.opp_units_at_nodes[node_num] = num_units / 2.
-            self.opp_units_at_nodes[tar_node_num] = num_units / 2.
+            self.opp_units_at_nodes[node_num] += num_units / 2.
+            self.opp_units_at_nodes[tar_node_num] += num_units / 2.
 
     def handle_bad_message(self, msg):
         if 'movetonode' not in msg.message.lower():
@@ -439,11 +447,15 @@ class Everglades(gym.Env):
         if not self.observation_space.contains(state):
             logger.info('Observation not within defined bounds')
             logger.info(self.print_game_state())
+            logger.info(state)
 
         assert self.observation_space.shape == state.shape
 
     def print_game_state(self):
         units_at_node = {}
+        for i in range(1, self.num_nodes + 1):
+            units_at_node[i] = 0
+
         for i, unit in enumerate(self.units.get_all_units()):
             node_loc = unit.state.node_loc
             if node_loc not in units_at_node:
@@ -486,6 +498,11 @@ class Unit:
         self.state_history = [UnitState() if not is_opp else OppUnitState()]
 
     def add_state(self, state):
+        assert 0 <= state.in_combat <= 1
+        assert 0 <= state.in_transit <= 1
+        assert 0 <= state.health <= 100
+        assert 0 <= state.class_type <= 2
+        assert 1 <= state.node_loc <= 11
         self.state_history.append(state)
 
     @property

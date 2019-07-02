@@ -121,7 +121,7 @@ class Everglades(gym.Env):
             evgtypes.PY_GAME_Scores.__name__: self.update_game_score,
             evgtypes.PY_NODE_Knowledge.__name__: self.update_node_knowledge,
             evgtypes.PY_GROUP_Knowledge.__name__: self.update_opp_group_knowledge,
-            evgtypes.PubError.__name__: lambda msg: logger.debug('Bad message {}'.format(msg)),
+            evgtypes.PubError.__name__: lambda msg: logger.info('Bad message {}'.format(json.dumps(msg.__dict__))),
         }
 
         self.build_obs_space()
@@ -182,9 +182,14 @@ class Everglades(gym.Env):
         )
 
     def setup_state_trackers(self):
-        self.unit_to_group = {}
-        self.unit_definitions = np.zeros((self.num_units, 5))
-        self.opp_unit_definitions = np.zeros((self.num_units, 3))
+        # self.unit_to_group = {}
+        # self.unit_definitions = {i: {'group_id': None, 'unit_id': None, 'state': [0] * 5} for i in range(self.num_units)}
+        # self.unit_states = np.zeros((self.num_units, 5))
+        #
+        # self.opp_unit_definitions = {i: {'group_id': None, 'unit_id': None, 'state': [0] * 3} for i in range(self.num_units)}
+        # self.opp_unit_states = np.zeros((self.num_units, 3))
+        self.units = UnitDefs()
+        self.opp_units = UnitDefs()
 
         self.control_states = [0] * self.num_nodes
         self.global_control_states = [0] * self.num_nodes
@@ -210,11 +215,9 @@ class Everglades(gym.Env):
 
         state = self.build_state()
 
-        logger.info('Control states: {}'.format(self.control_states))
-
         info = {
-            'friendly_units_rem': len(np.where(self.unit_definitions[:, 2] > 0)),
-            'opp_units_rem': len(np.where(self.opp_unit_definitions[:, 2] > 0)),
+            'friendly_units_rem': len(np.where(self.unit_states[:, 2] > 0)),
+            'opp_units_rem': len(np.where(self.opp_unit_states[:, 2] > 0)),
         }
 
         if is_game_over:
@@ -224,6 +227,8 @@ class Everglades(gym.Env):
             reward = 1 if self.winning_player == self.player_num else 0
         else:
             reward = 0
+
+        self.print_game_state()
 
         return state, reward, is_game_over, info
 
@@ -240,12 +245,13 @@ class Everglades(gym.Env):
         if self.conn is None:
             logger.info(f'Connecting to server at:\n\tPub Addr {self.pub_addr}\n\tSub Addr {self.sub_addr}')
             self.conn = Connection(self.pub_addr, self.sub_addr, self.player_num, await_connection_time=self.await_connection_time)
+
         self.setup_state_trackers()
 
         for class_type, count in self.unit_configs.items():
             for i in range(count):
                 self.conn.send(
-                    evgcommands.PY_GROUP_InitGroup(self.conn.guid, class_type, 1, f'{class_type}-{i}')
+                    evgcommands.PY_GROUP_InitGroup(self.conn.guid, [class_type], [1], [f'{class_type}-{i}'])
                 )
 
         self.conn.send(evgcommands.Go(self.conn.guid))
@@ -261,7 +267,12 @@ class Everglades(gym.Env):
                 raise TimeoutError('Failed to start a new game')
             sleep(1)
 
-        return self.build_state()
+        state = self.build_state()
+
+        logger.info('Group IDs: {}'.format(self.group_definitions.keys()))
+        logger.info('Unit to group IDs: {}'.format(self.unit_to_group.keys()))
+
+        return state
 
     def render(self, mode='human'):
         pass
@@ -323,7 +334,7 @@ class Everglades(gym.Env):
         # node loc, class, health, in transit, in combat
         # opp state
         # node loc, class, in_transit
-        state = np.concatenate([state, self.unit_definitions.flatten(), self.opp_unit_definitions.flatten()])
+        state = np.concatenate([state, self.unit_states.flatten(), self.opp_unit_states.flatten()])
 
         self.verify_state(state)
 
@@ -332,12 +343,9 @@ class Everglades(gym.Env):
     def initialize_groups(self, msg):
         logger.debug(f'~~~Initializing groups:\n{json.dumps(msg.__dict__)}')
         is_for_player = msg.player == self.player_num
-        group_defs, unit_defs = self.get_definitions(msg.player)
+        units = self.units if is_for_player else self.opp_units
 
         group_num = msg.group
-
-        if group_num not in self.group_definitions:
-            group_defs[group_num] = []
 
         for start_id, group_type, count in zip(msg.start, msg.types, msg.count):
             if count == 0:
@@ -345,20 +353,10 @@ class Everglades(gym.Env):
 
             group_type_num = self.unit_classes.index(group_type.lower())
             state = np.array([int(msg.node), group_type_num, 100, 0, 0])
-            if start_id > 100:
-                # NOTE: this is a hack because the server doesn't reset group IDs after a game
-                start_id -= int(math.floor(start_id / 100.0)) * 100
-            for i in range(count):
-                id = start_id + i - 1
-                # node loc, class, health, in transit, in combat
-                unit_defs[id] = state
-                group_defs[group_num].append(id)
-                if is_for_player:
-                    self.unit_to_group[id] = group_num
+            units.add_units([start_id + i for i in range(count)], [group_num] * count, [state] * count)
 
     def update_group_locs(self, msg):
         logger.info(f'~~~Updating group locations:\n{json.dumps(msg.__dict__)}')
-        group_defs, unit_defs = self.get_definitions(msg.player)
 
         in_transit = msg.status == 'IN_TRANSIT'
         if msg.status == 'IN_TRANSIT':
@@ -368,11 +366,12 @@ class Everglades(gym.Env):
         else:
             node_loc = msg.start
 
-        for id in group_defs[msg.group]:
-            state = unit_defs[id]
+        units = self.units.get_units(group_ids=[msg.group])
+        for unit in units:
+            state = unit.state
             state[0] = node_loc
             state[3] = in_transit
-            unit_defs[id] = state
+            unit.add_state(state)
 
     def update_group_combat(self, msg):
         logger.info(f'~~~Group combat update:\n{json.dumps(msg.__dict__)}')
@@ -388,7 +387,7 @@ class Everglades(gym.Env):
         logger.warning('Transferring units not supported')
 
     def update_control_state(self, msg):
-        logger.info(f'~~~Control state update:\n{json.dumps(msg.__dict__)}')
+        logger.debug(f'~~~Control state update:\n{json.dumps(msg.__dict__)}')
         value = msg.controlvalue if msg.faction == self.player_num else -msg.controlvalue
         value = int(value * 100)
         if msg.player == self.player_num:
@@ -403,7 +402,7 @@ class Everglades(gym.Env):
         self.winning_player = -1 if (self.game_scores[0] == self.game_scores).all() else np.argmax(self.game_scores)
 
     def update_node_knowledge(self, msg):
-        logger.info(f'~~~Node knowledge update:\n{json.dumps(msg.__dict__)}')
+        logger.debug(f'~~~Node knowledge update:\n{json.dumps(msg.__dict__)}')
         is_players = msg.player == self.player_num
         for node, knowledge, controller, percent in zip(msg.nodes, msg.knowledge, msg.controller, msg.percent):
             self.global_control_states[node - 1] = percent
@@ -419,11 +418,13 @@ class Everglades(gym.Env):
         if team_num == self.player_num:
             group_definitions = self.group_definitions
             unit_definitions = self.unit_definitions
+            unit_states = self.unit_states
         else:
             group_definitions = self.opp_group_definitions
             unit_definitions = self.opp_unit_definitions
+            unit_states = self.opp_unit_states
 
-        return group_definitions, unit_definitions
+        return group_definitions, unit_definitions, unit_states
 
     def verify_state(self, state):
 
@@ -450,3 +451,121 @@ class Everglades(gym.Env):
             string += '\nOpp Unit {}: {}'.format(i, state)
 
         return string
+
+    def print_game_state(self):
+        units_at_node = {}
+        for i in range(self.num_nodes):
+            units_at_node[i] = 0
+        for i, unit_state in enumerate(self.unit_definitions):
+            node_loc = unit_state[0]
+            units_at_node[node_loc] += 1
+
+        string = 'Game state:'
+        for i in range(self.num_nodes):
+            node_num = i + 1
+            string += '\n{} ({} %): {} units'.format(node_num, self.control_states[i], units_at_node[i])
+
+        logger.info(string)
+
+
+class Unit:
+    def __init__(self, id, group_id, ind):
+        self.id = id
+        self.group_id = group_id
+        self.ind = ind
+        self.state_history = []
+
+    def add_state(self, state):
+        self.state_history.append(state)
+
+    @property
+    def state(self):
+        return self.state_history[-1].copy()
+
+
+class UnitDefs:
+    valid_kwargs = ['group_ids', 'unit_ids', 'inds']
+
+    def __init__(self):
+        """
+        Manages a set of units. Units are accessible by group ID, unit ID, or index
+        """
+        self.ids = []  # array of unit objects where the unit ID == index (zeros pad non-existent unit IDs)
+        self.group_ids = []  # array of unit objects where the group ID == index (zeros pad non-existent group IDs)
+        self.inds = []  # array of unit objects where the ind == ind (no padding)
+
+    def add_units(self, unit_ids, group_ids, states):
+        """
+        One time addition oof units
+        :param unit_ids: list
+        :param group_ids: list
+        :return:
+        """
+        for unit_id, group_id, state in zip(unit_ids, group_ids, states):
+            ind = len(self.inds)
+            unit = Unit(unit_id, group_id, ind)
+            unit.add_state(state)
+            self.inds.append(unit)
+
+            assert ind < 100  # should num_units
+
+            self._add(ind, self.group_ids, group_id)
+            self._add(ind, self.ids, unit_id)
+
+    def _add(self, ind, id_list, id_ind):
+        """
+        Helper function to connect id_list to id_ind with the index of the corresponding unit
+        :param id_list:
+        :param id_inds:
+        :return:
+        """
+        if 0 <= id_ind < len(id_list):
+            id_list[id_ind] = ind
+        else:
+            len_diff = id_ind - len(id_list)
+            extend = [-1] * len_diff + [ind]
+            id_list.extend(extend)
+        assert id_list[id_ind] == ind
+
+    def get_units(self, **kwargs):
+        if not self._validate_args(kwargs):
+            raise Exception('Received unexpected keyword argument: {}'.format(kwargs.keys()))
+
+        inds = kwargs.get('inds')
+        unit_ids = kwargs.get('unit_ids')
+        group_ids = kwargs.get('group_ids')
+
+        if inds is not None:
+            try:
+                return self._get_units_by_ind(inds)
+            except:
+                return self._get_units_by_ind([inds])
+        elif unit_ids is not None:
+            try:
+                return self._get_units_by_ind([self.ids[unit_id] for unit_id in unit_ids])
+            except:
+                return self._get_units_by_ind([self.ids[unit_id] for unit_id in [unit_ids]])
+        elif group_ids is not None:
+            try:
+                return self._get_units_by_ind([self.ids[group_id] for group_id in group_ids])
+            except:
+                return self._get_units_by_ind([self.ids[group_id] for group_id in [group_ids]])
+        return []
+
+    def _get_units_by_ind(self, inds):
+        return [self.inds[ind] for ind in inds]
+
+    def get_group_ids(self, **kwargs):
+        return [unit.group_id for unit in self.get_units(**kwargs)]
+
+    def get_unit_ids(self, **kwargs):
+        return [unit.id for unit in self.get_units(**kwargs)]
+
+    def get_inds(self, **kwargs):
+        return [unit.ind for unit in self.get_units(**kwargs)]
+
+    def get_states(self, **kwargs):
+        return [unit.state for unit in self.get_units(**kwargs)]
+
+    def _validate_args(self, kwargs):
+        return len([True for key, val in self.valid_kwargs if key in kwargs and val is not None]) > 0

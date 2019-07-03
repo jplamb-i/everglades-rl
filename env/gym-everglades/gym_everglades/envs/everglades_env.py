@@ -246,9 +246,11 @@ class Everglades(gym.Env):
                     evgcommands.PY_GROUP_InitGroup(self.conn.guid, [class_type], [1], [f'{class_type}-{i}'])
                 )
 
+        waiting_for_action = False
         _counter = 0
         while len(self.units) < self.num_units:
-            waiting_for_action, _, _ = self.update_state()
+            _waiting_for_action, _, _ = self.update_state()
+            waiting_for_action = _waiting_for_action if _waiting_for_action else False
 
             _counter += 1
             if _counter > 50:
@@ -260,7 +262,6 @@ class Everglades(gym.Env):
 
         self.conn.send(evgcommands.Go(self.conn.guid))
 
-        waiting_for_action = waiting_for_action if waiting_for_action else False
         _counter = 0
         while not waiting_for_action:
             waiting_for_action, _, _ = self.update_state()

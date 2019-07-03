@@ -5,8 +5,7 @@ import gym
 from logging import getLogger
 import gym_everglades
 
-from resources.logger import get_logger
-import time
+from actor.resources.logger import get_logger
 
 logger = getLogger()
 
@@ -22,13 +21,14 @@ class RandomAgent:
         return np.random.randint(self.low, self.high, self.shape, dtype=np.int)
 
 
-def main(run_local=False):
+def main(run_local=False, player_num=1, delay_time=0):
     env_config = {
         'player_num': int(os.getenv('PLAYER_NUM', 1)),
         'game_config': {
             'await_connection_time': 120,
             'server_address':  'localhost' if run_local else 'server',
-            'pub_socket': str(os.getenv("PUB_SOCKET", "5555")),
+            'pub_socket': '5555' if player_num == 0 else '5556',
+            # str(os.getenv("PUB_SOCKET", "5555")),
             'sub_socket': '5563',
             'unit_config': {
                 1: 33,
@@ -39,7 +39,7 @@ def main(run_local=False):
     }
     logger.info('Starting game for player {}'.format(os.getenv('PLAYER_NUM')))
 
-    time.sleep(10)
+    time.sleep(delay_time)
 
     env = gym.make('everglades-v0', env_config=env_config)
     agent = RandomAgent(env.action_space)

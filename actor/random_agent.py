@@ -2,11 +2,11 @@ import os
 import numpy as np
 import time
 import gym
-import gym_everglades
 from logging import getLogger
+import gym_everglades
 
 from resources.logger import get_logger
-# import docker
+import time
 
 logger = getLogger()
 
@@ -38,6 +38,8 @@ def main(run_local=False):
         },
     }
     logger.info('Starting game for player {}'.format(os.getenv('PLAYER_NUM')))
+
+    time.sleep(10)
 
     env = gym.make('everglades-v0', env_config=env_config)
     agent = RandomAgent(env.action_space)

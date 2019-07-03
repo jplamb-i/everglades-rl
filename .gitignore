@@ -3,7 +3,7 @@
 *_old
 
 __pycache__/
-actor/env/gym-everglades/gym_everglades.egg-info/
+env/gym-everglades/gym_everglades.egg-info/
 *.log
 
 todo.txt

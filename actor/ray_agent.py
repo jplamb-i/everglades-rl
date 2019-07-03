@@ -1,12 +1,9 @@
 import os
-import numpy as np
-import time
-import gym
-import gym_everglades
 from logging import getLogger
 import ray
 from ray.rllib.agents import ppo
 from ray.tune.logger import pretty_print
+# from gym_everglades import Everglades
 from gym_everglades.envs.everglades_env import Everglades
 
 from resources.logger import get_logger
@@ -44,10 +41,12 @@ def main(restore_path=None, num_gpus=0, num_workers=1, num_training_iterations=1
     # }
     config['env_config'] = env_config
 
+    # register_env('everglades', Everglades)
+
     # config['num_cpus_per_worker'] = 1
 
     trainer = ppo.PPOTrainer(
-        env=Everglades,
+        env='everglades',
         config=config,
     )
 

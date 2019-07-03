@@ -1,0 +1,11 @@
+FROM everglades/env:latest
+
+EXPOSE 5555 5556 5563
+
+RUN mkdir resources results
+
+COPY resources/logger.py /resources
+
+COPY random_agent.py ./main.py
+
+CMD python3 -u main.py
